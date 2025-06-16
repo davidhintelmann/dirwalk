@@ -1,0 +1,209 @@
+package main
+
+import (
+	"container/heap"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"golang.org/x/sys/windows"
+)
+
+func ProcessDirectorySimple(root string, maxDepth int) filepath.WalkFunc {
+	return func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			// handle PerfLogs Admin Access by skipping directory
+			if info.IsDir() && info.Name() == "PerfLogs" {
+				log.Println("Skipping PerfLogs...")
+				return fs.SkipDir
+			}
+			log.Printf("prevent panic by handling failure accessing a path %q: %v\n", path, err)
+			return err
+		}
+		if info.IsDir() && info.Name() == "$Recycle.Bin" {
+			log.Printf("skipping a dir without errors: %+v \n", info.Name())
+			return filepath.SkipDir
+		} else if info.IsDir() && info.Name() == "PerfLogs" {
+			log.Println("skip PerfLogs", path)
+			return fs.SkipDir
+		} else if info.IsDir() && dirHelper(root, path) >= maxDepth {
+			log.Printf("Reached max depth: %v, subfolder: %s\n", maxDepth, path)
+			return fs.SkipDir
+		} else {
+			fsize, funit := formatSize(getWin32Size(info))
+			log.Printf("visited file or dir: %q -- filesize: %s %s\n", path, fsize, funit)
+			return nil
+		}
+	}
+}
+
+// helper function to return depth of recursive walk as an int
+// starting from the root directory
+func dirHelper(root, subfolder string) int {
+	after, found := strings.CutPrefix(subfolder, root)
+	if !found {
+		log.Fatalf("did not cut root prefix from path.\nroot:%s\nsubfolder:%s\nafter:%s\n", root, subfolder, after)
+	}
+
+	return strings.Count(after, string(os.PathSeparator))
+}
+
+// helper function to format the size of `fs.FileInfo` from
+// bytes into KB, MB, or GB if necessary
+func formatSize(filesize int64) (string, string) {
+	fsize := float64(filesize)
+	sizes := [4]string{"bytes", "KB", "MB", "GB"}
+	var idx int
+	for fsize > 1024 && idx < 3 {
+		fsize /= 1024
+		idx++
+	}
+
+	if sizes[idx] == "bytes" {
+		result := fmt.Sprint(fsize)
+		return result, sizes[idx]
+	} else {
+		result := fmt.Sprintf("%.2f", fsize)
+		return result, sizes[idx]
+	}
+}
+
+var (
+	filesScanned int64
+	dirsScanned  int64
+	totalSize    int64
+)
+
+type FileEntry struct {
+	Path string
+	Size int64
+}
+
+type FileMinHeap []FileEntry
+
+func (h FileMinHeap) Len() int           { return len(h) }
+func (h FileMinHeap) Less(i, j int) bool { return h[i].Size < h[j].Size }
+func (h FileMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *FileMinHeap) Push(x any) {
+	*h = append(*h, x.(FileEntry))
+}
+
+func (h *FileMinHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+func ConcurrentWalk(root string, maxDepth, topN int) {
+	semaphore := make(chan struct{}, 64)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	h := &FileMinHeap{}
+	heap.Init(h)
+
+	semaphore <- struct{}{} // acquire root
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { <-semaphore }()
+		walkDir(root, root, maxDepth, topN, &wg, h, &mu, semaphore)
+	}()
+	wg.Wait()
+
+	fmt.Println("\nTop", topN, "largest files:")
+	sorted := make([]FileEntry, h.Len())
+	for i := len(sorted) - 1; i >= 0; i-- {
+		sorted[i] = heap.Pop(h).(FileEntry)
+	}
+
+	for i, f := range sorted {
+		size, unit := formatSize(f.Size)
+		fmt.Printf("%2d. %-10s %s\n", i+1, size+" "+unit, f.Path)
+	}
+
+	fmt.Printf("\nScanned %d directories\n", dirsScanned)
+	fmt.Printf("Scanned %d files\n", filesScanned)
+	fsize, funit := formatSize(totalSize)
+	fmt.Printf("Total disk space scanned %s %s\n", fsize, funit)
+}
+
+func walkDir(root, current string, maxDepth, topN int, wg *sync.WaitGroup, h *FileMinHeap, mu *sync.Mutex, semaphore chan struct{}) {
+	entries, err := os.ReadDir(current)
+	if err != nil {
+		atomic.AddInt64(&dirsScanned, 1) // increment directory counter
+		// log.Printf("failed to read %s: %v\n", current, err)
+		return
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(current, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("could not get info for %s: %v\n", fullPath, err)
+			continue
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		if entry.IsDir() {
+			atomic.AddInt64(&dirsScanned, 1) // increment directory counter
+			depth := dirHelper(root, fullPath)
+			if maxDepth >= 0 && depth > maxDepth {
+				continue
+			}
+
+			select {
+			case semaphore <- struct{}{}: // acquire before spawn
+				wg.Add(1) // add before spawn
+				go func(p string) {
+					defer wg.Done()
+					defer func() { <-semaphore }()
+					walkDir(root, p, maxDepth, topN, wg, h, mu, semaphore)
+				}(fullPath)
+			default:
+				// fallback to synchronous call when no slots available
+				walkDir(root, fullPath, maxDepth, topN, wg, h, mu, semaphore)
+			}
+
+		} else {
+			atomic.AddInt64(&filesScanned, 1)               // increment file counter
+			atomic.AddInt64(&totalSize, getWin32Size(info)) // add to disk space total
+			mu.Lock()
+			if h.Len() < topN {
+				heap.Push(h, FileEntry{Path: fullPath, Size: getWin32Size(info)})
+			} else if (*h)[0].Size < getWin32Size(info) {
+				heap.Pop(h)
+				heap.Push(h, FileEntry{Path: fullPath, Size: getWin32Size(info)})
+			}
+			mu.Unlock()
+		}
+	}
+}
+
+// On Windows, info.Size() may not account for:
+//
+// - NTFS cluster rounding
+//
+// - Alternate data streams
+//
+// - Compression
+//
+// this function will format the filesize correctly on Win32 systems
+func getWin32Size(info fs.FileInfo) int64 {
+	if stat, ok := info.Sys().(*windows.Win32FileAttributeData); ok {
+		// SizeHigh << 32 | SizeLow gives you correct file size in bytes
+		return int64(stat.FileSizeHigh)<<32 + int64(stat.FileSizeLow)
+	}
+	return info.Size() // fallback
+}
