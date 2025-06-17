@@ -17,7 +17,6 @@ func main() {
 	rootDirectory := flag.String("r", dir, "root directory to begin walking for stats")
 	maxDepth := flag.Int("d", 0, "depth for how many subfolders to walkthrough via recursion (default: 0  no recursion)")
 	topN := flag.Int("n", 10, "number of largest files to track and output")
-	// _ = flag.String("h", "", "-r : root directory to begin walking for stats, default: terminal working directory\n-d : depth for how many subfolders to walkthrough via recursion, default: 0 (no recursion)\n-n : number of largest files to track and output, default: top 10\n")
 	flag.Parse()
 
 	if *maxDepth < 0 {
