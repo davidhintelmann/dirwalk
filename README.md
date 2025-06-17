@@ -37,9 +37,9 @@ Then run the executable with:
 ```
 
 flags:
--`r` root directory to start scanning from. Default C:\ directory
+- `r` root directory to start scanning from. Default C:\ directory
 - `d` depth to limit the number of subfolders to recursively search. 
-Set to negative one for no limited. Default depth set to one
+Set to negative one for no limit. Default depth set to one
 - `n` number of files to return. Default top 10 largest files
 
 ### Example
@@ -48,6 +48,7 @@ Set to negative one for no limited. Default depth set to one
 .\main.exe -r C:\ -d -1
 ```
 
+**Output**
 ```pwsh
 Scanning Directory: C:\ (depth: ∞)
 
