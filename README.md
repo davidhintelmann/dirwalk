@@ -3,7 +3,7 @@
 A high-performance, concurrent disk usage analyzer written in Go. 
 It scans a directory tree starting from a root path, calculates total disk usage, 
 and displays the top N largest files. Designed specifically for Windows and Linux
-oeprating systems. For windows this program can handles quirks like NTFS compression 
+operating systems. For windows this program can handles quirks like NTFS compression 
 and system-protected directories.
 
 ## 🚀 Features
