@@ -16,9 +16,11 @@ and system-protected directories.
 - Graceful error handling
 - Minimal dependencies
 
+`ConcurrentWalk` function automatically decides which operating system is being used
+
 Windows solution has reliance on package golang.org/x/sys/windows
-Linux will use standard library to return filesize. `ConcurrentWalk` function 
-automatically decides which operating system is being used.
+
+Linux will use standard library to return filesize
 
 Does not follow symlinks or mount points
 
@@ -27,7 +29,7 @@ Designed for performance and visibility, not archival or deletion
 
 ## 🏗️ Build & Run
 
-Requires **Go 1.20+** and **Windows / Linux OS**.
+Requires **Go 1.20+** and **Windows / Linux OS**
 
 ```pwsh
 go build -o main.exe
@@ -41,7 +43,7 @@ Then run the executable with:
 
 flags:
 - `r` root directory to start scanning from. Default: terminal working directory
-- `d` depth to limit the number of subfolders to recursively search. 
+- `d` depth to limit the number of subfolders to recursively search.
 Set to negative one for no limit. Default depth set to zero (no recursion)
 - `n` number of files to return. Default top 10 largest files
 
