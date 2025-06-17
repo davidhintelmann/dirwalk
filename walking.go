@@ -7,12 +7,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
@@ -40,7 +38,7 @@ func ProcessDirectorySimple(root string, maxDepth int) filepath.WalkFunc {
 			log.Printf("Reached max depth: %v, subfolder: %s\n", maxDepth, path)
 			return fs.SkipDir
 		} else {
-			fsize, funit := formatSize(getWin32Size(info))
+			fsize, funit := formatSize(getFileSize(info))
 			log.Printf("visited file or dir: %q -- filesize: %s %s\n", path, fsize, funit)
 			return nil
 		}
@@ -115,28 +113,12 @@ func (h *FileMinHeap) Pop() any {
 	return x
 }
 
-// Based on operating system, decide which alogorithm to use to
-// concurrently process directories for filesizes. Support for Windows and Linux
-// only. Mac has not been tested.
-func ConcurrentWalk(root string, maxDepth, topN int) *StatsOutput {
-	os := runtime.GOOS
-	fmt.Println("Operating System:", os) // windows , linux
-	switch os {
-	case "windows":
-		return ConcurrentWalkWin32(root, maxDepth, topN)
-	case "linux":
-		return ConcurrentWalkUnix(root, maxDepth, topN)
-	default:
-		return ConcurrentWalkUnix(root, maxDepth, topN)
-	}
-}
-
 // Optimized algorithm for walking directories starting at root. Uses
 // concurrency to efficiently process directory stats with multiple
 // go routines. Currently set to 64 parallel processes. Only to be used
 // on Windows operating system. For Unix based system use the
 // `ConcurrentWalkUnix` function instead.
-func ConcurrentWalkWin32(root string, maxDepth, topN int) *StatsOutput {
+func ConcurrentWalk(root string, maxDepth, topN int) *StatsOutput {
 	results := &StatsOutput{}
 	semaphore := make(chan struct{}, 64)
 	var wg sync.WaitGroup
@@ -208,124 +190,16 @@ func walkDir(root, current string, maxDepth, topN int, results *StatsOutput, wg 
 			}
 
 		} else {
-			atomic.AddInt64(&results.filesScanned, 1)               // increment file counter
-			atomic.AddInt64(&results.totalSize, getWin32Size(info)) // add to disk space total
+			atomic.AddInt64(&results.filesScanned, 1)              // increment file counter
+			atomic.AddInt64(&results.totalSize, getFileSize(info)) // add to disk space total
 			mu.Lock()
 			if h.Len() < topN {
-				heap.Push(h, FileEntry{Path: fullPath, Size: getWin32Size(info)})
-			} else if (*h)[0].Size < getWin32Size(info) {
+				heap.Push(h, FileEntry{Path: fullPath, Size: getFileSize(info)})
+			} else if (*h)[0].Size < getFileSize(info) {
 				heap.Pop(h)
-				heap.Push(h, FileEntry{Path: fullPath, Size: getWin32Size(info)})
+				heap.Push(h, FileEntry{Path: fullPath, Size: getFileSize(info)})
 			}
 			mu.Unlock()
 		}
 	}
-}
-
-// Optimized algorithm for walking directories starting at root. Uses
-// concurrency to efficiently process directory stats with multiple
-// go routines. Currently set to 64 parallel processes. Only to be used
-// on Linux operating system. For Windows based system use the
-// `ConcurrentWalkWin32` function instead.
-func ConcurrentWalkUnix(root string, maxDepth, topN int) *StatsOutput {
-	results := &StatsOutput{}
-	semaphore := make(chan struct{}, 64)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	h := &FileMinHeap{}
-	heap.Init(h)
-
-	semaphore <- struct{}{} // acquire root
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer func() { <-semaphore }()
-		walkDirUnix(root, root, maxDepth, topN, results, &wg, h, &mu, semaphore)
-	}()
-	wg.Wait()
-
-	fmt.Println("\nTop", topN, "largest files:")
-	sorted := make([]FileEntry, h.Len())
-	for i := len(sorted) - 1; i >= 0; i-- {
-		sorted[i] = heap.Pop(h).(FileEntry)
-	}
-
-	for i, f := range sorted {
-		size, unit := formatSize(f.Size)
-		fmt.Printf("%2d. %-10s %s\n", i+1, size+" "+unit, f.Path)
-	}
-	return results
-}
-
-func walkDirUnix(root, current string, maxDepth, topN int, results *StatsOutput, wg *sync.WaitGroup, h *FileMinHeap, mu *sync.Mutex, semaphore chan struct{}) {
-	entries, err := os.ReadDir(current)
-	if err != nil {
-		atomic.AddInt64(&results.dirsScanned, 1) // increment directory counter
-		// log.Printf("failed to read %s: %v\n", current, err)
-		return
-	}
-
-	for _, entry := range entries {
-		fullPath := filepath.Join(current, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			log.Printf("could not get info for %s: %v\n", fullPath, err)
-			continue
-		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		if entry.IsDir() {
-			atomic.AddInt64(&results.dirsScanned, 1) // increment directory counter
-			depth := dirHelper(root, fullPath)
-			if maxDepth >= 0 && depth > maxDepth {
-				continue
-			}
-
-			select {
-			case semaphore <- struct{}{}: // acquire before spawn
-				wg.Add(1) // add before spawn
-				go func(p string) {
-					defer wg.Done()
-					defer func() { <-semaphore }()
-					walkDirUnix(root, p, maxDepth, topN, results, wg, h, mu, semaphore)
-				}(fullPath)
-			default:
-				// fallback to synchronous call when no slots available
-				walkDirUnix(root, fullPath, maxDepth, topN, results, wg, h, mu, semaphore)
-			}
-
-		} else {
-			atomic.AddInt64(&results.filesScanned, 1)        // increment file counter
-			atomic.AddInt64(&results.totalSize, info.Size()) // add to disk space total
-			mu.Lock()
-			if h.Len() < topN {
-				heap.Push(h, FileEntry{Path: fullPath, Size: info.Size()})
-			} else if (*h)[0].Size < getWin32Size(info) {
-				heap.Pop(h)
-				heap.Push(h, FileEntry{Path: fullPath, Size: info.Size()})
-			}
-			mu.Unlock()
-		}
-	}
-}
-
-// On Windows, info.Size() may not account for:
-//
-// - NTFS cluster rounding
-//
-// - Alternate data streams
-//
-// - Compression
-//
-// this function will format the filesize correctly on Win32 systems
-func getWin32Size(info fs.FileInfo) int64 {
-	if stat, ok := info.Sys().(*windows.Win32FileAttributeData); ok {
-		// SizeHigh << 32 | SizeLow gives you correct file size in bytes
-		return int64(stat.FileSizeHigh)<<32 + int64(stat.FileSizeLow)
-	}
-	return info.Size() // fallback
 }
