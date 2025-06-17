@@ -2,8 +2,9 @@
 
 A high-performance, concurrent disk usage analyzer written in Go. 
 It scans a directory tree starting from a root path, calculates total disk usage, 
-and displays the top N largest files. Designed specifically for Windows systems 
-and handles quirks like NTFS compression and system-protected directories.
+and displays the top N largest files. Designed specifically for Windows and Linux
+operating systems. For windows this program can handles quirks like NTFS compression 
+and system-protected directories.
 
 ## 🚀 Features
 
@@ -15,7 +16,11 @@ and handles quirks like NTFS compression and system-protected directories.
 - Graceful error handling
 - Minimal dependencies
 
-Windows only due to reliance on golang.org/x/sys/windows
+`ConcurrentWalk` function automatically decides which operating system is being used
+
+Windows solution has reliance on package golang.org/x/sys/windows
+
+Linux will use standard library to return filesize
 
 Does not follow symlinks or mount points
 
@@ -24,7 +29,7 @@ Designed for performance and visibility, not archival or deletion
 
 ## 🏗️ Build & Run
 
-Requires **Go 1.20+** and **Windows OS**.
+Requires **Go 1.20+** and **Windows / Linux OS**
 
 ```pwsh
 go build -o main.exe
@@ -37,9 +42,9 @@ Then run the executable with:
 ```
 
 flags:
-- `r` root directory to start scanning from. Default C:\ directory
-- `d` depth to limit the number of subfolders to recursively search. 
-Set to negative one for no limit. Default depth set to one
+- `r` root directory to start scanning from. Default: terminal working directory
+- `d` depth to limit the number of subfolders to recursively search.
+Set to negative one for no limit. Default depth set to zero (no recursion)
 - `n` number of files to return. Default top 10 largest files
 
 ### Example
@@ -49,6 +54,7 @@ Set to negative one for no limit. Default depth set to one
 ```
 
 **Output**
+ 
 ```pwsh
 Scanning Directory: C:\ (depth: ∞)
 
